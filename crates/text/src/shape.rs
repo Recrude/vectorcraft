@@ -105,9 +105,22 @@ impl SGlyph {
     pub fn is_space(&self) -> bool {
         self.inline.is_none() && matches!(self.ch, ' ' | '\t' | '\u{3000}' | '\u{2002}'..='\u{200B}')
     }
-    /// A line may break after this glyph.
-    pub fn break_after(&self) -> bool {
-        self.is_space() || self.word_end || matches!(self.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/' | SOFT_HYPHEN) || is_cjk(self.ch)
+    /// A line may break after this glyph, before `next` (none: the end of the text). Korean is
+    /// set with spaces between words and breaks there (KLREQ 7.1.1 on the word basis,
+    /// https://www.w3.org/TR/klreq/#line-break): never after Hangul, and before it only after a
+    /// space, a hyphen, a dash or a slash, so a Korean word keeps the Latin letters, digits,
+    /// brackets and Hanja set solid with its Hangul ("JPEG파일을", "（韓）은", "語를"). Between
+    /// two Hanja a line still breaks as in Chinese and Japanese: telling Korean from them needs
+    /// the text's language. Never before a space other than the ideographic one: the line
+    /// breaks after it (UAX #14 LB7), so the next line doesn't start with it.
+    pub fn break_after(&self, next: Option<&SGlyph>) -> bool {
+        if !self.is_space() && next.is_some_and(|n| n.is_space() && n.ch != '\u{3000}') {
+            return false;
+        }
+        self.is_space()
+            || self.word_end
+            || matches!(self.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/' | SOFT_HYPHEN)
+            || (is_cjk(self.ch) && !is_hangul(self.ch) && next.is_none_or(|n| !is_hangul(n.ch)))
     }
     /// A soft (discretionary) hyphen: invisible unless a line breaks after it.
     pub fn is_soft_hyphen(&self) -> bool {
@@ -276,6 +289,12 @@ pub(crate) fn mark_word_ends(text: &str, start: usize, sg: &mut [SGlyph]) {
 
 pub(crate) fn is_cjk(c: char) -> bool {
     matches!(c as u32, 0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF | 0x20000..=0x2FFFF)
+}
+
+/// Hangul in every form: syllables, conjoining jamo (with their extensions A and B),
+/// compatibility jamo (ㄱ ㅏ) and half-width jamo (ﾡ).
+pub(crate) fn is_hangul(c: char) -> bool {
+    matches!(c as u32, 0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xAC00..=0xD7FF | 0xFFA0..=0xFFDC)
 }
 
 /// Vertical metrics (points) of a style's resolved face: (ascent, descent, leading).

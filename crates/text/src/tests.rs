@@ -694,6 +694,32 @@ fn justified_japanese_lines_spread_between_characters() {
     assert!(g[at].origin.x - g[at - 1].origin.x > a + 0.1, "二–A takes its share");
 }
 
+/// Justified Korean lines spread the leftover room over their word spaces (KLREQ 7.2), each
+/// word's characters set solid, Hanja too; a line of one word too wide for the measure still
+/// spreads between its syllables.
+#[test]
+fn justified_korean_lines_spread_at_word_spaces() {
+    let text = "가나 韓國 다라";
+    let natural = layout(db(), &point(text, style(20.0)));
+    let first = width(&point("가나 韓國", style(20.0)));
+    // Half of what the next word needs is left over.
+    let left_over = (width(&point("가나 韓國 다", style(20.0))) - first) / 2.0;
+    let l = layout(db(), &area(text, style(20.0), Rect::new(0.0, 0.0, first + left_over, 400.0), Justify::JustifyLeft));
+    assert_eq!(&text[l.lines[0].start..l.lines[0].end], "가나 韓國 ");
+    let moved = |k: usize| l.glyphs[k].origin.x - natural.glyphs[k].origin.x;
+    for (k, want) in [(0, 0.0), (1, 0.0), (3, left_over), (4, left_over)] {
+        assert!((moved(k) - want).abs() < 0.01, "glyph {k} moved {} instead of {want}", moved(k));
+    }
+    // One word over three lines: the first line reaches the frame's edge between its syllables.
+    let a = natural.glyphs[0].advance;
+    let l = layout(db(), &area("가나다라마바사", style(20.0), Rect::new(0.0, 0.0, 3.5 * a, 400.0), Justify::JustifyLeft));
+    let first = &l.glyphs[l.lines[0].glyph_start..l.lines[0].glyph_end];
+    assert_eq!(first.len(), 3);
+    for w in first.windows(2) {
+        assert!((w[1].origin.x - w[0].origin.x - 1.25 * a).abs() < 0.01, "half a syllable over 2 gaps");
+    }
+}
+
 /// Leading measured from em box top to em box top (Japanese layout's model): area type's first line
 /// touches the frame's top; lines of one size are as far apart as with baseline-to-baseline leading;
 /// with sizes mixed, a line's leading is the space below it (baseline leading: above it).
@@ -1022,6 +1048,26 @@ fn thai_lines_break_between_words() {
     }
     let mark = |c: char| matches!(c, '\u{0E31}' | '\u{0E34}'..='\u{0E3A}' | '\u{0E47}'..='\u{0E4E}');
     assert!(lines.iter().all(|s| s.chars().next().is_some_and(|c| !mark(c))), "a line starts with a mark: {lines:?}");
+}
+
+/// Korean is set with spaces between words: area type breaks its lines at the spaces (KLREQ 7.1.1
+/// on the word basis), never between the syllables of a word nor between its Hangul and the
+/// digits, Latin letters or Hanja set solid with it.
+#[test]
+fn korean_lines_break_between_words() {
+    let text = "한국어 문장은 띄어쓰기에서 줄을 바꾼다 2026년에 JPEG파일을 語를";
+    // As wide as the widest word: each line holds one word or a few.
+    let measure = text.split(' ').map(|w| width(&point(w, style(12.0)))).fold(0.0, f64::max);
+    let l = layout(db(), &area(text, style(12.0), Rect::new(0.0, 0.0, measure + 1.0, 2000.0), Justify::Left));
+    let lines: Vec<&str> = l.lines.iter().map(|ln| &text[ln.start..ln.end]).collect();
+    assert!(lines.len() >= 4, "{lines:?}");
+    let ends: Vec<usize> = text.match_indices(' ').map(|(at, _)| at + 1).chain([text.len()]).collect();
+    for ln in &l.lines {
+        assert!(ends.contains(&ln.end), "a line ends inside a word: {lines:?}");
+    }
+    for w in l.lines.windows(2) {
+        assert_eq!(w[0].end, w[1].start, "lines tile the text");
+    }
 }
 
 /// The desktop's dictionaries keep loanwords whole that a smaller model splits: โปรแกรม

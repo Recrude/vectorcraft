@@ -584,6 +584,34 @@ fn kinsoku_set_decides_whether_a_small_kana_may_start_a_line() {
     }
 }
 
+/// Korean breaks at its word spaces in vertical type too, whatever the Kinsoku Set: in a measure
+/// that holds 한국 문 but not 한국 문장, 한국 문장을 breaks before 문, not after it. Measured in the
+/// fonts at hand (the bundled ones' missing-glyph boxes stand in for Hangul).
+#[test]
+fn korean_breaks_at_word_spaces_in_vertical_type_too() {
+    use vectorcraft_doc::Kinsoku;
+    let lay = |text: &str, measure: Option<f64>, k: Kinsoku, vertical_type: bool| {
+        let mut t = TextObject::point(Point::ZERO, text, CharStyle { size: 20.0, ..CharStyle::default() });
+        t.xf = Affine::IDENTITY;
+        t.vertical = vertical_type;
+        t.para.kinsoku = k;
+        if let Some(m) = measure {
+            let frame = if vertical_type { Rect::new(0.0, 0.0, 200.0, m) } else { Rect::new(0.0, 0.0, m, 200.0) };
+            t.kind = TextKind::Area { frame: PathData::from_bezpath(&frame.to_path(0.1)) };
+        }
+        let l = layout(FontDb::global(), &t);
+        (line_texts(&t, &l), l)
+    };
+    for vertical_type in [false, true] {
+        let length = |text: &str| lay(text, None, Kinsoku::Hard, vertical_type).1.glyphs.iter().map(|g| g.advance).sum::<f64>();
+        let measure = length("한국 문") + 0.25 * length("한");
+        assert!(measure < length("한국 문장"), "vertical {vertical_type}");
+        for k in [Kinsoku::Hard, Kinsoku::Soft, Kinsoku::None] {
+            assert_eq!(lay("한국 문장을", Some(measure), k, vertical_type).0, ["한국", "문장을"], "vertical {vertical_type}, {k:?}");
+        }
+    }
+}
+
 /// Proportional Metrics in vertical type (#966): upright glyphs take the font's proportional
 /// heights (`vpal`, from shaping them top to bottom) and move with them, so each glyph's ink stays in
 /// its shorter cell. Line-end Punctuation Half Width takes nothing more off the punctuation `vpal`

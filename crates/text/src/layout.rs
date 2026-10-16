@@ -15,8 +15,8 @@ use crate::fontdb::FontDb;
 use crate::hyphen::hyphen_points_with;
 use crate::justify::{Flex, LineFit, apply_desired, fit_line, is_word_space};
 use crate::shape::{
-    Punct, SGlyph, Tcy, cap_x_heights, hyphen_glyph, is_cjk, mark_word_ends, no_line_end, no_line_start, punct, shape_range, soft_line_start,
-    style_metrics,
+    Punct, SGlyph, Tcy, cap_x_heights, hyphen_glyph, is_cjk, is_hangul, mark_word_ends, no_line_end, no_line_start, punct, shape_range,
+    soft_line_start, style_metrics,
 };
 use crate::{Composer, FirstBaseline, InlineGlyph, LayoutOptions, LineInfo, OtFeatures, PositionedGlyph, TextLayout, VerticalAlign};
 
@@ -473,10 +473,8 @@ fn is_japanese_letter(c: char) -> bool {
         return true;
     }
     is_cjk(c)
-        && !matches!(
-            c as u32,
-            0x3000..=0x303F | 0x3130..=0x318F | 0xAC00..=0xD7AF | 0xFF01..=0xFF0F | 0xFF1A..=0xFF20 | 0xFF3B..=0xFF40 | 0xFF5B..=0xFF65 | 0xFFA0..=0xFFDC
-        )
+        && !is_hangul(c)
+        && !matches!(c as u32, 0x3000..=0x303F | 0xFF01..=0xFF0F | 0xFF1A..=0xFF20 | 0xFF3B..=0xFF40 | 0xFF5B..=0xFF65)
         && c != '・'
         && punct(c).is_none()
 }
@@ -1215,7 +1213,7 @@ fn leader_outline(db: &FontDb, g: &SGlyph, leader: &str, origin: f64, from: f64,
 /// left out, the hyphen of a soft hyphen in), the least room a line needs not to break inside it.
 fn word_width(g: &[SGlyph], i: usize) -> f64 {
     let mut w = 0.0;
-    for gl in g.get(i..).unwrap_or_default() {
+    for (k, gl) in g.iter().enumerate().skip(i) {
         if gl.is_space() {
             break;
         }
@@ -1223,7 +1221,7 @@ fn word_width(g: &[SGlyph], i: usize) -> f64 {
             return w + hyphen_glyph(gl).adv;
         }
         w += gl.adv;
-        if gl.break_after() {
+        if gl.break_after(g.get(k + 1)) {
             break;
         }
     }
@@ -1278,7 +1276,7 @@ fn break_line(
         }
         x += cluster_width;
         let last = &g[cluster_end - 1];
-        if last.break_after() && kinsoku_allows(g, cluster_end - 1, kinsoku) {
+        if last.break_after(g.get(cluster_end)) && kinsoku_allows(g, cluster_end - 1, kinsoku) {
             if last.is_soft_hyphen() {
                 if x + hyphen_glyph(last).adv <= width + EPS {
                     last_break = Some((cluster_end, true));
@@ -1306,7 +1304,7 @@ fn break_line(
         && !in_zone(zone)
     {
         let mut we = j;
-        while we < g.len() && !g[we].is_space() && !g[we].break_after() {
+        while we < g.len() && !g[we].is_space() && !g[we].break_after(g.get(we + 1)) {
             we += 1;
         }
         let x_ws: f64 = g[i..word_start].iter().map(|g| g.adv).sum();
@@ -1499,6 +1497,85 @@ mod wrapping_tests {
         assert_eq!(glyphs.get(second_end).map(|g| g.byte), Some(8));
     }
 
+    /// A glyph for each character of `text`, each 1 pt wide.
+    fn unit_glyphs(text: &str) -> Vec<SGlyph> {
+        synthetic_glyphs(&text.char_indices().map(|(byte, c)| (byte, c.len_utf8(), 1.0, c)).collect::<Vec<_>>())
+    }
+
+    /// `text` broken line by line (the single-line composer) in a measure of `width` points.
+    fn greedy_lines(text: &str, width: f64, kinsoku: Kinsoku) -> Vec<&str> {
+        let glyphs = unit_glyphs(text);
+        let mut lines = vec![];
+        let mut i = 0;
+        while i < glyphs.len() {
+            let (end, _) = break_line(text, &glyphs, i, width, &[], 0.0, None, Burasagari::None, kinsoku);
+            assert!(end > i, "{text}: no progress at {i}");
+            lines.push(&text[glyphs[i].byte..glyphs.get(end).map_or(text.len(), |g| g.byte)]);
+            i = end;
+        }
+        lines
+    }
+
+    /// Korean breaks at its word spaces, never between the syllables of a word, whatever the
+    /// Kinsoku Set (KLREQ 7.1.1 on the word basis); a word wider than the line breaks where it
+    /// overflows.
+    #[test]
+    fn korean_lines_break_at_word_spaces_not_between_syllables() {
+        for kinsoku in [Kinsoku::Hard, Kinsoku::Soft, Kinsoku::None] {
+            assert_eq!(
+                greedy_lines("한국어 문장은 띄어쓰기에서 줄을 바꾼다", 9.5, kinsoku),
+                ["한국어 문장은 ", "띄어쓰기에서 줄을 ", "바꾼다"],
+                "{kinsoku:?}"
+            );
+            assert_eq!(greedy_lines("가나다라마바사 아", 3.5, kinsoku), ["가나다", "라마바", "사 아"], "{kinsoku:?}");
+        }
+        // The least room a line needs is the whole word.
+        let glyphs = unit_glyphs("한국어 문장");
+        assert_eq!((word_width(&glyphs, 0), word_width(&glyphs, 4)), (3.0, 2.0));
+    }
+
+    /// Hanja set solid with Hangul stay with it ("語를"), and so do brackets and Latin letters;
+    /// between two Hanja, and in Japanese and Chinese text, a line breaks as before.
+    #[test]
+    fn a_line_breaks_before_hangul_only_after_a_space_a_hyphen_a_dash_or_a_slash() {
+        let breaks = |a: char, b: char| {
+            let glyphs = synthetic_glyphs(&[(0, a.len_utf8(), 1.0, a), (a.len_utf8(), b.len_utf8(), 1.0, b)]);
+            glyphs[0].break_after(glyphs.get(1))
+        };
+        for (a, b) in [
+            ('한', '국'),
+            ('국', 'a'),
+            ('국', '語'),
+            ('語', '를'),
+            ('）', '은'),
+            ('。', '한'),
+            ('G', '파'),
+            ('6', '년'),
+            ('ㅋ', 'ㅋ'),
+            ('\u{FFA1}', '\u{FFA1}'),
+            ('國', ' '),
+            ('—', ' '),
+        ] {
+            assert!(!breaks(a, b), "{a}{b}");
+        }
+        for (a, b) in [
+            (' ', '한'),
+            ('\u{3000}', '한'),
+            ('-', '한'),
+            ('–', '한'),
+            ('/', '한'),
+            ('語', '文'),
+            ('漢', '字'),
+            ('あ', 'い'),
+            ('字', '。'),
+            ('字', '\u{3000}'),
+        ] {
+            assert!(breaks(a, b), "{a}{b}");
+        }
+        assert_eq!(greedy_lines("韓國語를 읽다", 3.5, Kinsoku::Hard), ["韓國", "語를 ", "읽다"]);
+        assert_eq!(greedy_lines("日本語の文章です", 3.5, Kinsoku::Hard), ["日本語", "の文章", "です"]);
+    }
+
     #[test]
     fn narrow_arabic_area_wrap_keeps_base_and_mark_together_when_supported() {
         let db = FontDb::global();
@@ -1590,7 +1667,8 @@ fn hyphen_breaks(text: &str, g: &[SGlyph], ws: usize, we: usize, opts: &Hyphenat
     while b > a && !g[b - 1].is_letter() {
         b -= 1;
     }
-    if b <= a || g[a..b].iter().any(|g| !g.is_letter()) {
+    // Korean isn't hyphenated: a word with Hangul breaks at its spaces, even with Latin letters in it.
+    if b <= a || g[a..b].iter().any(|g| !g.is_letter() || is_hangul(g.ch)) {
         return vec![];
     }
     let (s, e) = (g[a].byte, g[b - 1].byte + g[b - 1].len);
@@ -1612,7 +1690,7 @@ fn candidates(text: &str, g: &[SGlyph], hyphenate: Option<&HyphenationOptions>, 
     let mut v = vec![];
     let mut ws = 0;
     for (j, gl) in g.iter().enumerate() {
-        let end_of_word = gl.is_space() || gl.break_after();
+        let end_of_word = gl.is_space() || gl.break_after(g.get(j + 1));
         if end_of_word {
             if let Some(opts) = hyphenate
                 && j > ws
@@ -1907,8 +1985,13 @@ fn flow(cx: &mut Ctx<'_>, paras: &[Range<usize>], t: &TextObject, regions: Optio
             let spaces = sg[i..body].iter().filter(|g| g.is_space()).count();
             // Japanese (and Chinese) lines are justified between their characters (JLREQ 3.8): the
             // gaps next to a CJK character, not inside a Latin word or a tate-chu-yoko block.
+            // Korean is set with word spaces and justified at them, each word's characters kept
+            // together (KLREQ 7.2, https://www.w3.org/TR/klreq/#h_justification): a line with
+            // Hangul and spaces keeps its characters set solid, Hanja and all.
+            let korean = spaces > 0 && sg[i..body].iter().any(|g| is_hangul(g.ch));
             let cjk_gap = |j: usize| {
-                j + 1 < body
+                !korean
+                    && j + 1 < body
                     && !held.contains(&j)
                     && sg
                         .get(j)

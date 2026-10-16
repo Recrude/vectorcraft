@@ -577,6 +577,21 @@ fn hyphenated_layout_adds_hyphens() {
     }
 }
 
+/// Korean isn't hyphenated: with Hyphenation on, a Korean word with Latin letters in it moves to
+/// the next line whole, where the same Latin words alone are hyphenated.
+#[test]
+fn korean_words_are_not_hyphenated() {
+    let latin = "Extraordinarily comprehensive typographical considerations notwithstanding everything.";
+    let korean = "Extraordinarily를 comprehensive한 typographical에서 considerations와 notwithstanding이 everything이다.";
+    let hyphens = |text: &str| {
+        let mut t = area(text, style(14.0), Rect::new(0.0, 0.0, 150.0, 600.0), Justify::Left);
+        t.para.hyphenate = true;
+        layout(db(), &t).glyphs.iter().filter(|g| g.len == 0).count()
+    };
+    assert!(hyphens(latin) > 0, "the Latin words are hyphenated");
+    assert_eq!(hyphens(korean), 0);
+}
+
 /// Preferences › Hyphenation › Exceptions (#394): listing a word stops the layout from breaking it.
 #[test]
 fn hyphenation_exceptions_keep_listed_words_whole_in_layout() {
