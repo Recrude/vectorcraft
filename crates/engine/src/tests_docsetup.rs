@@ -164,6 +164,20 @@ fn smart_punctuation_uses_the_document_quotes() {
     assert_eq!(text(&s, id).plain_text(), "«oui» ‹non›");
 }
 
+/// Korean is one of the languages, with the quotes of horizontal Korean text, “ ” and ‘ ’ (KLREQ
+/// 6.1.3, https://www.w3.org/TR/klreq/#writing-dir-mark).
+#[test]
+fn korean_documents_take_korean_quotes() {
+    let mut s = session();
+    s.execute("document.setup", &json!({"language": "French"})).unwrap();
+    s.execute("document.setup", &json!({"language": "korean"})).unwrap();
+    assert_eq!(setup(&s).language, "Korean");
+    assert_eq!((setup(&s).quotes.double, setup(&s).quotes.single), (['“', '”'], ['‘', '’']));
+    let id = create_text(&mut s, "\"네\" '아니요'");
+    s.execute("type.smartPunctuation", &json!({"scope": "document"})).unwrap();
+    assert_eq!(text(&s, id).plain_text(), "“네” ‘아니요’");
+}
+
 #[test]
 fn superscript_and_small_caps_use_and_follow_the_setup_sizes() {
     let mut s = session();

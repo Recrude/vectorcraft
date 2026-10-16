@@ -156,6 +156,7 @@ pub const LANGUAGES: &[(&str, Quotes)] = &[
     ("Russian", Quotes { double: ['«', '»'], single: ['„', '“'] }),
     ("Japanese", Quotes { double: ['「', '」'], single: ['『', '』'] }),
     ("Chinese", Quotes { double: ['“', '”'], single: ['‘', '’'] }),
+    ("Korean", Quotes { double: ['“', '”'], single: ['‘', '’'] }),
 ];
 
 /// The quotes of a [`LANGUAGES`] entry (case-insensitive).
